@@ -41,11 +41,10 @@
       const [expenses, setExpenses] = useState([]);
 
       const [search, setSearch] = useState('');
+      const [appliedSearch, setAppliedSearch] = useState('');
       const [selectedCat, setSelectedCat] = useState('Todas');
       const [paymentFilter, setPaymentFilter] = useState('all');
-      const [showAddPlayerModal, setShowAddPlayerModal] = useState(false);
 
-      const [newPair, setNewPair] = useState({ cat: 'Femení B', p1Name: '', p1Phone: '', p1Email: '', p2Name: '', p2Phone: '', p2Email: '' });
       const [newSponsor, setNewSponsor] = useState({ name: '', type: 'Welcome Pack / Producto', amount: '', status: 'Confirmado', notes: '' });
       const [newExpense, setNewExpense] = useState({ concept: '', category: 'Compras / Material', amount: '', paidBy: 'Rut', status: 'Pagado', date: new Date().toISOString().slice(0,10) });
 
@@ -92,64 +91,117 @@
         const totalPairs = registrations.length;
         const totalPlayers = registrations.reduce((acc, r) => acc + 1 + (r.p2Name && r.p2Name.toLowerCase() !== 'pendiente' ? 1 : 0), 0);
         let bizumCollected = 0;
+        let cashCollected = 0;
         let playersPaidCount = 0;
 
         registrations.forEach(r => {
-          if (r.p1Paid) { bizumCollected += Number(r.p1Amount) || 0; playersPaidCount += 1; }
-          if (r.p2Paid) { bizumCollected += Number(r.p2Amount) || 0; playersPaidCount += 1; }
+          if (r.p1Paid) {
+            const amt1 = Number(r.p1Amount) || 0;
+            if (r.p1Method === 'cash') cashCollected += amt1;
+            else bizumCollected += amt1;
+            playersPaidCount += 1;
+          }
+          if (r.p2Paid) {
+            const amt2 = Number(r.p2Amount) || 0;
+            if (r.p2Method === 'cash') cashCollected += amt2;
+            else bizumCollected += amt2;
+            playersPaidCount += 1;
+          }
         });
 
-        const expectedMaxBizum = totalPairs * 2 * pricePerPlayer;
-        const pendingBizum = Math.max(0, expectedMaxBizum - bizumCollected);
-        const sponsorIncome = sponsors.reduce((acc, s) => acc + (Number(s.amount) || 0), 0);
+        const totalIncome = bizumCollected + cashCollected;
+        const expectedMaxTotal = totalPairs * 2 * pricePerPlayer;
+        const pendingTotal = Math.max(0, expectedMaxTotal - totalIncome);
         const totalExpenses = expenses.reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
-        const projectedBalance = (expectedMaxBizum + sponsorIncome) - totalExpenses;
+        const projectedBalance = totalIncome - totalExpenses;
 
         const byCategory = {};
         CATEGORIES.filter(c => c !== 'Todas').forEach(c => { byCategory[c] = 0; });
         registrations.forEach(r => { byCategory[r.cat] = (byCategory[r.cat] || 0) + 1; });
 
-        return { totalPairs, totalPlayers, bizumCollected, playersPaidCount, expectedMaxBizum, pendingBizum, sponsorIncome, totalExpenses, projectedBalance, byCategory };
-      }, [registrations, sponsors, expenses, pricePerPlayer]);
+        return {
+          totalPairs,
+          totalPlayers,
+          bizumCollected,
+          cashCollected,
+          totalIncome,
+          playersPaidCount,
+          expectedMaxTotal,
+          pendingTotal,
+          totalExpenses,
+          projectedBalance,
+          byCategory
+        };
+      }, [registrations, expenses, pricePerPlayer]);
 
       const filteredRegistrations = useMemo(() => {
         return registrations.filter(r => {
           const matchesCat = selectedCat === 'Todas' || r.cat === selectedCat;
-          const q = search.toLowerCase();
+          const q = appliedSearch.toLowerCase().trim();
           const matchesSearch = !q ||
             (r.p1Name && r.p1Name.toLowerCase().includes(q)) ||
             (r.p2Name && r.p2Name.toLowerCase().includes(q)) ||
             (r.p1Phone && r.p1Phone.toLowerCase().includes(q)) ||
             (r.p2Phone && r.p2Phone.toLowerCase().includes(q)) ||
+            (r.p1Email && r.p1Email.toLowerCase().includes(q)) ||
+            (r.p2Email && r.p2Email.toLowerCase().includes(q)) ||
             (r.cat && r.cat.toLowerCase().includes(q));
           const bothPaid = r.p1Paid && r.p2Paid;
           const matchesPay = paymentFilter === 'all' || (paymentFilter === 'paid' && bothPaid) || (paymentFilter === 'pending' && !bothPaid);
           return matchesCat && matchesSearch && matchesPay;
         });
-      }, [registrations, selectedCat, search, paymentFilter]);
+      }, [registrations, selectedCat, appliedSearch, paymentFilter]);
 
-      const togglePlayerBizum = (r, playerNum) => {
+      const togglePlayerPayment = (r, playerNum, method) => {
         const updated = { ...r };
         if (playerNum === 1) {
-          updated.p1Paid = !r.p1Paid;
-          updated.p1Amount = updated.p1Paid ? (r.p1Amount > 0 ? r.p1Amount : pricePerPlayer) : 0;
+          const wasPaidWithSame = updated.p1Paid && updated.p1Method === method;
+          if (wasPaidWithSame) {
+            updated.p1Paid = false;
+            updated.p1Amount = 0;
+            updated.p1Method = '';
+          } else {
+            updated.p1Paid = true;
+            updated.p1Method = method;
+            updated.p1Amount = updated.p1Amount > 0 ? updated.p1Amount : pricePerPlayer;
+          }
         } else {
-          updated.p2Paid = !r.p2Paid;
-          updated.p2Amount = updated.p2Paid ? (r.p2Amount > 0 ? r.p2Amount : pricePerPlayer) : 0;
+          const wasPaidWithSame = updated.p2Paid && updated.p2Method === method;
+          if (wasPaidWithSame) {
+            updated.p2Paid = false;
+            updated.p2Amount = 0;
+            updated.p2Method = '';
+          } else {
+            updated.p2Paid = true;
+            updated.p2Method = method;
+            updated.p2Amount = updated.p2Amount > 0 ? updated.p2Amount : pricePerPlayer;
+          }
         }
         setRegistrations(prev => prev.map(item => item.rowNumber === r.rowNumber ? updated : item));
         sendPostToSheets({
-          action: "updateBizum", rowNumber: r.rowNumber,
-          p1Paid: updated.p1Paid, p1Amount: updated.p1Amount,
-          p2Paid: updated.p2Paid, p2Amount: updated.p2Amount
+          action: "updatePayment",
+          rowNumber: r.rowNumber,
+          p1Paid: updated.p1Paid,
+          p1Amount: updated.p1Amount,
+          p1Method: updated.p1Method,
+          p2Paid: updated.p2Paid,
+          p2Amount: updated.p2Amount,
+          p2Method: updated.p2Method
         });
       };
 
-      const updatePlayerBizumAmount = (r, playerNum, val) => {
+      const updatePlayerAmount = (r, playerNum, val) => {
         const amount = Math.max(0, Number(val) || 0);
         const updated = { ...r };
-        if (playerNum === 1) { updated.p1Amount = amount; updated.p1Paid = amount > 0; }
-        else { updated.p2Amount = amount; updated.p2Paid = amount > 0; }
+        if (playerNum === 1) {
+          updated.p1Amount = amount;
+          updated.p1Paid = amount > 0;
+          if (!updated.p1Method && amount > 0) updated.p1Method = 'bizum';
+        } else {
+          updated.p2Amount = amount;
+          updated.p2Paid = amount > 0;
+          if (!updated.p2Method && amount > 0) updated.p2Method = 'bizum';
+        }
         setRegistrations(prev => prev.map(item => item.rowNumber === r.rowNumber ? updated : item));
       };
 
@@ -167,17 +219,19 @@
         setNewExpense({ concept: '', category: 'Compras / Material', amount: '', paidBy: 'Rut', status: 'Pagado', date: new Date().toISOString().slice(0,10) });
       };
 
-      const handleAddPair = (e) => {
+      const handleSearchSubmit = (e) => {
         e.preventDefault();
-        if (!newPair.p1Name) return;
-        sendPostToSheets({ action: "addPair", ...newPair });
-        setNewPair({ cat: 'Femení B', p1Name: '', p1Phone: '', p1Email: '', p2Name: '', p2Phone: '', p2Email: '' });
-        setShowAddPlayerModal(false);
+        setAppliedSearch(search);
+      };
+
+      const handleResetSearch = () => {
+        setSearch('');
+        setAppliedSearch('');
       };
 
       return (
         <div className="min-h-screen pb-24 max-w-md mx-auto bg-slate-50 shadow-2xl relative">
-          {/* Header con diseño y colores de Too Match Padel (Gradiente Turquesa / Lima) */}
+          {/* Header con gradiente Too Match Padel */}
           <header className="bg-tmp-gradient text-slate-900 p-5 rounded-b-3xl shadow-lg">
             <div className="flex justify-between items-start mb-3">
               <div>
@@ -185,7 +239,7 @@
                   <span className="bg-slate-900 text-lime-400 text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider">7 Nov · Nick Club</span>
                   {lastSync && <span className="text-[10px] text-slate-900 font-bold">Sync: {lastSync}</span>}
                 </div>
-                <h1 className="text-2xl font-black tracking-tight mt-1 text-white drop-shadow-sm" style={{fontFamily: 'Inter, sans-serif'}}>
+                <h1 className="text-2xl font-black tracking-tight mt-1 text-white drop-shadow-sm">
                   Too Match Padel 🎾
                 </h1>
               </div>
@@ -205,14 +259,14 @@
                 <div className="text-lg font-black text-slate-900 mt-0.5">{stats.totalPairs} <span className="text-[11px] font-medium text-slate-600">({stats.totalPlayers} jug.)</span></div>
               </div>
               <div className="bg-white/90 backdrop-blur-md rounded-2xl p-2.5 shadow-sm border border-white/50">
-                <div className="text-[10px] font-bold text-slate-500 uppercase">Bizum</div>
-                <div className="text-lg font-black text-emerald-600 mt-0.5">{stats.bizumCollected}€</div>
-                <div className="text-[9px] text-slate-500">Faltan: {stats.pendingBizum}€</div>
+                <div className="text-[10px] font-bold text-slate-500 uppercase">Bizum / Efect.</div>
+                <div className="text-lg font-black text-emerald-600 mt-0.5">{stats.totalIncome}€</div>
+                <div className="text-[9px] text-slate-500">Pendiente: {stats.pendingTotal}€</div>
               </div>
               <div className="bg-white/90 backdrop-blur-md rounded-2xl p-2.5 shadow-sm border border-white/50">
                 <div className="text-[10px] font-bold text-slate-500 uppercase">Gastos</div>
                 <div className="text-lg font-black text-rose-600 mt-0.5">{stats.totalExpenses}€</div>
-                <div className="text-[9px] text-slate-500">Sponsors: +{stats.sponsorIncome}€</div>
+                <div className="text-[9px] text-slate-500">Neto: {stats.projectedBalance}€</div>
               </div>
             </div>
           </header>
@@ -222,24 +276,23 @@
               <>
                 <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200">
                   <div className="flex justify-between items-center mb-3">
-                    <h2 className="font-bold text-sm text-slate-800">💰 Balance Económico (3 Excels)</h2>
-                    <button onClick={() => setShowAddPlayerModal(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl">+ Pareja</button>
+                    <h2 className="font-bold text-sm text-slate-800">💰 Balance Económico</h2>
                   </div>
                   <div className="space-y-2 text-xs">
                     <div className="flex justify-between py-1.5 border-b border-slate-100">
-                      <span className="text-slate-500">Bizum confirmados ({stats.playersPaidCount} jug.):</span>
+                      <span className="text-slate-600 font-medium">📱 Cobrado por Bizum:</span>
                       <span className="font-bold text-emerald-600">+{stats.bizumCollected} €</span>
                     </div>
                     <div className="flex justify-between py-1.5 border-b border-slate-100">
-                      <span className="text-slate-500">Aportación Patrocinadores:</span>
-                      <span className="font-bold text-teal-600">+{stats.sponsorIncome} €</span>
+                      <span className="text-slate-600 font-medium">💵 Cobrado en Efectivo:</span>
+                      <span className="font-bold text-teal-600">+{stats.cashCollected} €</span>
                     </div>
                     <div className="flex justify-between py-1.5 border-b border-slate-100">
                       <span className="text-slate-500">Total Gastos (Excel Gastos):</span>
                       <span className="font-bold text-rose-600">-{stats.totalExpenses} €</span>
                     </div>
                     <div className="flex justify-between pt-2 text-sm">
-                      <span className="font-extrabold text-slate-800">Beneficio Proyectado:</span>
+                      <span className="font-extrabold text-slate-800">Beneficio Neto Actual:</span>
                       <span className={`font-black ${stats.projectedBalance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{stats.projectedBalance} €</span>
                     </div>
                   </div>
@@ -261,17 +314,37 @@
 
             {activeTab === 'jugadores' && (
               <>
+                {/* Barra de búsqueda exclusiva */}
                 <div className="bg-white rounded-2xl p-3.5 shadow-sm border border-slate-200 space-y-3 sticky top-2 z-30">
-                  <div className="flex gap-2">
-                    <input type="text" placeholder="🔍 Buscar jugador, teléfono..." value={search} onChange={e => setSearch(e.target.value)} className="flex-1 bg-slate-50 border rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-teal-500" />
-                    <button onClick={() => setShowAddPlayerModal(true)} className="bg-teal-700 text-lime-300 font-bold text-xs px-3 rounded-xl">+ Añadir</button>
-                  </div>
+                  <form onSubmit={handleSearchSubmit} className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Buscar por nombre, teléfono, email..."
+                      value={search}
+                      onChange={e => setSearch(e.target.value)}
+                      className="flex-1 bg-slate-50 border rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-teal-500"
+                    />
+                    <button type="submit" className="bg-teal-700 hover:bg-teal-800 text-lime-300 font-bold text-xs px-3.5 py-2 rounded-xl shadow flex items-center gap-1">
+                      🔍 Buscar
+                    </button>
+                    {appliedSearch && (
+                      <button type="button" onClick={handleResetSearch} className="bg-slate-200 text-slate-600 font-bold text-xs px-2.5 py-2 rounded-xl">
+                        ✕
+                      </button>
+                    )}
+                  </form>
                   <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-1">
                     {CATEGORIES.map(cat => (
                       <button key={cat} onClick={() => setSelectedCat(cat)} className={`px-3 py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition ${selectedCat === cat ? 'bg-teal-700 text-lime-300 shadow' : 'bg-slate-100 text-slate-600'}`}>{cat}</button>
                     ))}
                   </div>
                 </div>
+
+                {appliedSearch && (
+                  <div className="text-xs text-slate-500 px-1">
+                    Resultados para: <span className="font-bold text-slate-800">"{appliedSearch}"</span> ({filteredRegistrations.length})
+                  </div>
+                )}
 
                 <div className="space-y-3">
                   {filteredRegistrations.map((r) => {
@@ -282,31 +355,102 @@
                         <div className="flex justify-between items-center mb-2.5">
                           <span className="bg-teal-50 text-teal-800 text-[11px] font-extrabold px-2.5 py-0.5 rounded-full">{r.cat}</span>
                           <span className={`text-xs font-extrabold px-2 py-0.5 rounded-lg ${isFullyPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                            Bizum: {pairTotal}€ / 58€
+                            Pagado: {pairTotal}€ / 58€
                           </span>
                         </div>
-                        <div className="bg-slate-50 rounded-xl p-2.5 mb-2 flex justify-between items-center">
-                          <div className="pr-2">
-                            <div className="font-bold text-xs text-slate-800">1. {r.p1Name}</div>
-                            <a href={`tel:${r.p1Phone}`} className="text-[11px] text-teal-600 underline font-medium">{r.p1Phone}</a>
+
+                        {/* Jugador 1 */}
+                        <div className="bg-slate-50 rounded-xl p-2.5 mb-2">
+                          <div className="flex justify-between items-start mb-2">
+                            <div>
+                              <div className="font-bold text-xs text-slate-800">1. {r.p1Name}</div>
+                              <div className="text-[11px] text-slate-500">
+                                {r.p1Phone && <a href={`tel:${r.p1Phone}`} className="text-teal-600 underline mr-2">{r.p1Phone}</a>}
+                                {r.p1Email && <span>{r.p1Email}</span>}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                value={r.p1Amount}
+                                onChange={e => updatePlayerAmount(r, 1, e.target.value)}
+                                onBlur={() => sendPostToSheets({
+                                  action: "updatePayment",
+                                  rowNumber: r.rowNumber,
+                                  p1Paid: r.p1Paid,
+                                  p1Amount: r.p1Amount,
+                                  p1Method: r.p1Method,
+                                  p2Paid: r.p2Paid,
+                                  p2Amount: r.p2Amount,
+                                  p2Method: r.p2Method
+                                })}
+                                className="w-12 bg-white border rounded-lg px-1 py-1 text-right text-xs font-bold"
+                              />
+                              <span className="text-[11px] text-slate-400">€</span>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-1.5">
-                            <input type="number" value={r.p1Amount} onChange={e => updatePlayerBizumAmount(r, 1, e.target.value)} onBlur={() => sendPostToSheets({action:"updateBizum", rowNumber:r.rowNumber, p1Paid:r.p1Paid, p1Amount:r.p1Amount, p2Paid:r.p2Paid, p2Amount:r.p2Amount})} className="w-14 bg-white border rounded-lg px-1.5 py-1 text-right text-xs font-bold" />
-                            <span className="text-[11px] text-slate-400">€</span>
-                            <button onClick={() => togglePlayerBizum(r, 1)} className={`px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold transition ${r.p1Paid ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-600'}`}>{r.p1Paid ? '✓ OK' : 'Pend.'}</button>
+                          <div className="flex justify-end gap-1.5 pt-1 border-t border-slate-200/60">
+                            <button
+                              onClick={() => togglePlayerPayment(r, 1, 'bizum')}
+                              className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition ${r.p1Paid && r.p1Method === 'bizum' ? 'bg-emerald-600 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-700'}`}
+                            >
+                              📱 Bizum {r.p1Paid && r.p1Method === 'bizum' ? '✓' : ''}
+                            </button>
+                            <button
+                              onClick={() => togglePlayerPayment(r, 1, 'cash')}
+                              className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition ${r.p1Paid && r.p1Method === 'cash' ? 'bg-teal-600 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-700'}`}
+                            >
+                              💵 Efectivo {r.p1Paid && r.p1Method === 'cash' ? '✓' : ''}
+                            </button>
                           </div>
                         </div>
-                        <div className="bg-slate-50 rounded-xl p-2.5 flex justify-between items-center">
-                          <div className="pr-2">
-                            <div className="font-bold text-xs text-slate-800">2. {r.p2Name}</div>
-                            <a href={`tel:${r.p2Phone}`} className="text-[11px] text-teal-600 underline font-medium">{r.p2Phone}</a>
+
+                        {/* Jugador 2 */}
+                        <div className="bg-slate-50 rounded-xl p-2.5">
+                          <div className="flex justify-between items-start mb-2">
+                            <div>
+                              <div className="font-bold text-xs text-slate-800">2. {r.p2Name}</div>
+                              <div className="text-[11px] text-slate-500">
+                                {r.p2Phone && <a href={`tel:${r.p2Phone}`} className="text-teal-600 underline mr-2">{r.p2Phone}</a>}
+                                {r.p2Email && <span>{r.p2Email}</span>}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                value={r.p2Amount}
+                                onChange={e => updatePlayerAmount(r, 2, e.target.value)}
+                                onBlur={() => sendPostToSheets({
+                                  action: "updatePayment",
+                                  rowNumber: r.rowNumber,
+                                  p1Paid: r.p1Paid,
+                                  p1Amount: r.p1Amount,
+                                  p1Method: r.p1Method,
+                                  p2Paid: r.p2Paid,
+                                  p2Amount: r.p2Amount,
+                                  p2Method: r.p2Method
+                                })}
+                                className="w-12 bg-white border rounded-lg px-1 py-1 text-right text-xs font-bold"
+                              />
+                              <span className="text-[11px] text-slate-400">€</span>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-1.5">
-                            <input type="number" value={r.p2Amount} onChange={e => updatePlayerBizumAmount(r, 2, e.target.value)} onBlur={() => sendPostToSheets({action:"updateBizum", rowNumber:r.rowNumber, p1Paid:r.p1Paid, p1Amount:r.p1Amount, p2Paid:r.p2Paid, p2Amount:r.p2Amount})} className="w-14 bg-white border rounded-lg px-1.5 py-1 text-right text-xs font-bold" />
-                            <span className="text-[11px] text-slate-400">€</span>
-                            <button onClick={() => togglePlayerBizum(r, 2)} className={`px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold transition ${r.p2Paid ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-600'}`}>{r.p2Paid ? '✓ OK' : 'Pend.'}</button>
+                          <div className="flex justify-end gap-1.5 pt-1 border-t border-slate-200/60">
+                            <button
+                              onClick={() => togglePlayerPayment(r, 2, 'bizum')}
+                              className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition ${r.p2Paid && r.p2Method === 'bizum' ? 'bg-emerald-600 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-700'}`}
+                            >
+                              📱 Bizum {r.p2Paid && r.p2Method === 'bizum' ? '✓' : ''}
+                            </button>
+                            <button
+                              onClick={() => togglePlayerPayment(r, 2, 'cash')}
+                              className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition ${r.p2Paid && r.p2Method === 'cash' ? 'bg-teal-600 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-700'}`}
+                            >
+                              💵 Efectivo {r.p2Paid && r.p2Method === 'cash' ? '✓' : ''}
+                            </button>
                           </div>
                         </div>
+
                       </div>
                     );
                   })}
@@ -317,7 +461,7 @@
             {activeTab === 'sponsors' && (
               <>
                 <form onSubmit={handleAddSponsor} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 space-y-3">
-                  <h2 className="font-bold text-sm text-slate-800">🤝 Añadir Patrocinador (Excel Patrocinadores)</h2>
+                  <h2 className="font-bold text-sm text-slate-800">🤝 Añadir Patrocinador</h2>
                   <input type="text" placeholder="Nombre marca" value={newSponsor.name} onChange={e => setNewSponsor({...newSponsor, name: e.target.value})} className="w-full border rounded-xl p-2 text-xs" required />
                   <div className="grid grid-cols-2 gap-2">
                     <input type="number" placeholder="Importe (€)" value={newSponsor.amount} onChange={e => setNewSponsor({...newSponsor, amount: e.target.value})} className="border rounded-xl p-2 text-xs" />
@@ -378,27 +522,6 @@
                 <p className="text-xs text-slate-500">Pega la URL web de tu Apps Script:</p>
                 <input type="text" placeholder="https://script.google.com/macros/s/.../exec" value={scriptUrl} onChange={e => setScriptUrl(e.target.value)} className="w-full border rounded-xl p-2.5 text-xs" />
                 <button onClick={() => { localStorage.setItem('tmp_script_url', scriptUrl); setShowConfigModal(false); fetchAllFromGoogleSheets(scriptUrl); }} className="w-full bg-teal-700 text-lime-300 font-bold py-2.5 rounded-xl text-xs shadow">Guardar y Conectar</button>
-              </div>
-            </div>
-          )}
-
-          {showAddPlayerModal && (
-            <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-              <div className="bg-white w-full max-w-md rounded-t-3xl sm:rounded-3xl p-5 space-y-3">
-                <div className="flex justify-between items-center">
-                  <h3 className="font-bold text-sm text-slate-800">Nueva Pareja</h3>
-                  <button onClick={() => setShowAddPlayerModal(false)}>✕</button>
-                </div>
-                <form onSubmit={handleAddPair} className="space-y-2.5 text-xs">
-                  <select value={newPair.cat} onChange={e => setNewPair({...newPair, cat: e.target.value})} className="w-full border rounded-xl p-2.5 font-bold">
-                    {CATEGORIES.filter(c => c !== 'Todas').map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                  <input type="text" placeholder="Jugador 1 (Nombre y apellidos)" value={newPair.p1Name} onChange={e => setNewPair({...newPair, p1Name: e.target.value})} className="w-full border rounded-lg p-2" required />
-                  <input type="text" placeholder="Teléfono J1" value={newPair.p1Phone} onChange={e => setNewPair({...newPair, p1Phone: e.target.value})} className="w-full border rounded-lg p-2" />
-                  <input type="text" placeholder="Jugador 2 (Nombre y apellidos)" value={newPair.p2Name} onChange={e => setNewPair({...newPair, p2Name: e.target.value})} className="w-full border rounded-lg p-2" required />
-                  <input type="text" placeholder="Teléfono J2" value={newPair.p2Phone} onChange={e => setNewPair({...newPair, p2Phone: e.target.value})} className="w-full border rounded-lg p-2" />
-                  <button type="submit" className="w-full bg-teal-700 text-lime-300 font-bold py-3 rounded-xl shadow">Guardar en Google Sheet</button>
-                </form>
               </div>
             </div>
           )}
