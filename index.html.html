@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#115e59">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Too Match Padel - Gestión Online</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .bg-tmp-gradient {
+      background: linear-gradient(135deg, #2dd4bf 0%, #10b981 40%, #a3e635 100%);
+    }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+    const CATEGORIES = ["Todas", "Femení B", "Femení C", "Femení D", "Masculí B", "Masculí C", "Masculí D", "Mixte B", "Mixte C"];
+
+    function App() {
+      const [activeTab, setActiveTab] = useState('dashboard');
+      const [scriptUrl, setScriptUrl] = useState(() => localStorage.getItem('tmp_script_url') || '');
+      const [showConfigModal, setShowConfigModal] = useState(false);
+      const [syncing, setSyncing] = useState(false);
+      const [lastSync, setLastSync] = useState('');
+      const [pricePerPlayer] = useState(29);
+
+      const [registrations, setRegistrations] = useState([]);
+      const [sponsors, setSponsors] = useState([]);
+      const [expenses, setExpenses] = useState([]);
+
+      const [search, setSearch] = useState('');
+      const [selectedCat, setSelectedCat] = useState('Todas');
+      const [paymentFilter, setPaymentFilter] = useState('all');
+      const [showAddPlayerModal, setShowAddPlayerModal] = useState(false);
+
+      const [newPair, setNewPair] = useState({ cat: 'Femení B', p1Name: '', p1Phone: '', p1Email: '', p2Name: '', p2Phone: '', p2Email: '' });
+      const [newSponsor, setNewSponsor] = useState({ name: '', type: 'Welcome Pack / Producto', amount: '', status: 'Confirmado', notes: '' });
+      const [newExpense, setNewExpense] = useState({ concept: '', category: 'Compras / Material', amount: '', paidBy: 'Rut', status: 'Pagado', date: new Date().toISOString().slice(0,10) });
+
+      useEffect(() => {
+        if (scriptUrl) fetchAllFromGoogleSheets(scriptUrl);
+        else setShowConfigModal(true);
+      }, []);
+
+      const fetchAllFromGoogleSheets = async (urlToUse = scriptUrl) => {
+        if (!urlToUse) return;
+        setSyncing(true);
+        try {
+          const res = await fetch(urlToUse);
+          const data = await res.json();
+          if (data.status === 'ok') {
+            setRegistrations(data.registrations || []);
+            setSponsors(data.sponsors || []);
+            setExpenses(data.expenses || []);
+            setLastSync(new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }));
+          } else {
+            alert("Error: " + (data.message || "Verifica la implementación de Apps Script"));
+          }
+        } catch (err) {
+          alert("Error de conexión con Google Sheets.");
+        } finally {
+          setSyncing(false);
+        }
+      };
+
+      const sendPostToSheets = async (payload) => {
+        if (!scriptUrl) { setShowConfigModal(true); return; }
+        setSyncing(true);
+        try {
+          await fetch(scriptUrl, { method: 'POST', body: JSON.stringify(payload) });
+          await fetchAllFromGoogleSheets();
+        } catch (e) {
+          console.error(e);
+        } finally {
+          setSyncing(false);
+        }
+      };
+
+      const stats = useMemo(() => {
+        const totalPairs = registrations.length;
+        const totalPlayers = registrations.reduce((acc, r) => acc + 1 + (r.p2Name && r.p2Name.toLowerCase() !== 'pendiente' ? 1 : 0), 0);
+        let bizumCollected = 0;
+        let playersPaidCount = 0;
+
+        registrations.forEach(r => {
+          if (r.p1Paid) { bizumCollected += Number(r.p1Amount) || 0; playersPaidCount += 1; }
+          if (r.p2Paid) { bizumCollected += Number(r.p2Amount) || 0; playersPaidCount += 1; }
+        });
+
+        const expectedMaxBizum = totalPairs * 2 * pricePerPlayer;
+        const pendingBizum = Math.max(0, expectedMaxBizum - bizumCollected);
+        const sponsorIncome = sponsors.reduce((acc, s) => acc + (Number(s.amount) || 0), 0);
+        const totalExpenses = expenses.reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
+        const projectedBalance = (expectedMaxBizum + sponsorIncome) - totalExpenses;
+
+        const byCategory = {};
+        CATEGORIES.filter(c => c !== 'Todas').forEach(c => { byCategory[c] = 0; });
+        registrations.forEach(r => { byCategory[r.cat] = (byCategory[r.cat] || 0) + 1; });
+
+        return { totalPairs, totalPlayers, bizumCollected, playersPaidCount, expectedMaxBizum, pendingBizum, sponsorIncome, totalExpenses, projectedBalance, byCategory };
+      }, [registrations, sponsors, expenses, pricePerPlayer]);
+
+      const filteredRegistrations = useMemo(() => {
+        return registrations.filter(r => {
+          const matchesCat = selectedCat === 'Todas' || r.cat === selectedCat;
+          const q = search.toLowerCase();
+          const matchesSearch = !q ||
+            (r.p1Name && r.p1Name.toLowerCase().includes(q)) ||
+            (r.p2Name && r.p2Name.toLowerCase().includes(q)) ||
+            (r.p1Phone && r.p1Phone.toLowerCase().includes(q)) ||
+            (r.p2Phone && r.p2Phone.toLowerCase().includes(q)) ||
+            (r.cat && r.cat.toLowerCase().includes(q));
+          const bothPaid = r.p1Paid && r.p2Paid;
+          const matchesPay = paymentFilter === 'all' || (paymentFilter === 'paid' && bothPaid) || (paymentFilter === 'pending' && !bothPaid);
+          return matchesCat && matchesSearch && matchesPay;
+        });
+      }, [registrations, selectedCat, search, paymentFilter]);
+
+      const togglePlayerBizum = (r, playerNum) => {
+        const updated = { ...r };
+        if (playerNum === 1) {
+          updated.p1Paid = !r.p1Paid;
+          updated.p1Amount = updated.p1Paid ? (r.p1Amount > 0 ? r.p1Amount : pricePerPlayer) : 0;
+        } else {
+          updated.p2Paid = !r.p2Paid;
+          updated.p2Amount = updated.p2Paid ? (r.p2Amount > 0 ? r.p2Amount : pricePerPlayer) : 0;
+        }
+        setRegistrations(prev => prev.map(item => item.rowNumber === r.rowNumber ? updated : item));
+        sendPostToSheets({
+          action: "updateBizum", rowNumber: r.rowNumber,
+          p1Paid: updated.p1Paid, p1Amount: updated.p1Amount,
+          p2Paid: updated.p2Paid, p2Amount: updated.p2Amount
+        });
+      };
+
+      const updatePlayerBizumAmount = (r, playerNum, val) => {
+        const amount = Math.max(0, Number(val) || 0);
+        const updated = { ...r };
+        if (playerNum === 1) { updated.p1Amount = amount; updated.p1Paid = amount > 0; }
+        else { updated.p2Amount = amount; updated.p2Paid = amount > 0; }
+        setRegistrations(prev => prev.map(item => item.rowNumber === r.rowNumber ? updated : item));
+      };
+
+      const handleAddSponsor = (e) => {
+        e.preventDefault();
+        if (!newSponsor.name) return;
+        sendPostToSheets({ action: "addSponsor", id: Date.now(), ...newSponsor });
+        setNewSponsor({ name: '', type: 'Welcome Pack / Producto', amount: '', status: 'Confirmado', notes: '' });
+      };
+
+      const handleAddExpense = (e) => {
+        e.preventDefault();
+        if (!newExpense.concept || !newExpense.amount) return;
+        sendPostToSheets({ action: "addExpense", id: Date.now(), ...newExpense });
+        setNewExpense({ concept: '', category: 'Compras / Material', amount: '', paidBy: 'Rut', status: 'Pagado', date: new Date().toISOString().slice(0,10) });
+      };
+
+      const handleAddPair = (e) => {
+        e.preventDefault();
+        if (!newPair.p1Name) return;
+        sendPostToSheets({ action: "addPair", ...newPair });
+        setNewPair({ cat: 'Femení B', p1Name: '', p1Phone: '', p1Email: '', p2Name: '', p2Phone: '', p2Email: '' });
+        setShowAddPlayerModal(false);
+      };
+
+      return (
+        <div className="min-h-screen pb-24 max-w-md mx-auto bg-slate-50 shadow-2xl relative">
+          {/* Header con diseño y colores de Too Match Padel (Gradiente Turquesa / Lima) */}
+          <header className="bg-tmp-gradient text-slate-900 p-5 rounded-b-3xl shadow-lg">
+            <div className="flex justify-between items-start mb-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="bg-slate-900 text-lime-400 text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider">7 Nov · Nick Club</span>
+                  {lastSync && <span className="text-[10px] text-slate-900 font-bold">Sync: {lastSync}</span>}
+                </div>
+                <h1 className="text-2xl font-black tracking-tight mt-1 text-white drop-shadow-sm" style={{fontFamily: 'Inter, sans-serif'}}>
+                  Too Match Padel 🎾
+                </h1>
+              </div>
+              <div className="flex gap-1.5">
+                <button onClick={() => fetchAllFromGoogleSheets()} className="bg-white/90 hover:bg-white text-slate-900 text-xs font-extrabold px-2.5 py-1.5 rounded-xl shadow">
+                  {syncing ? '⏳...' : '🔄 Sync'}
+                </button>
+                <button onClick={() => setShowConfigModal(true)} className="bg-slate-900 text-lime-400 text-xs font-extrabold px-2.5 py-1.5 rounded-xl shadow">
+                  🔗 URL
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 mt-3">
+              <div className="bg-white/90 backdrop-blur-md rounded-2xl p-2.5 shadow-sm border border-white/50">
+                <div className="text-[10px] font-bold text-slate-500 uppercase">Parejas</div>
+                <div className="text-lg font-black text-slate-900 mt-0.5">{stats.totalPairs} <span className="text-[11px] font-medium text-slate-600">({stats.totalPlayers} jug.)</span></div>
+              </div>
+              <div className="bg-white/90 backdrop-blur-md rounded-2xl p-2.5 shadow-sm border border-white/50">
+                <div className="text-[10px] font-bold text-slate-500 uppercase">Bizum</div>
+                <div className="text-lg font-black text-emerald-600 mt-0.5">{stats.bizumCollected}€</div>
+                <div className="text-[9px] text-slate-500">Faltan: {stats.pendingBizum}€</div>
+              </div>
+              <div className="bg-white/90 backdrop-blur-md rounded-2xl p-2.5 shadow-sm border border-white/50">
+                <div className="text-[10px] font-bold text-slate-500 uppercase">Gastos</div>
+                <div className="text-lg font-black text-rose-600 mt-0.5">{stats.totalExpenses}€</div>
+                <div className="text-[9px] text-slate-500">Sponsors: +{stats.sponsorIncome}€</div>
+              </div>
+            </div>
+          </header>
+
+          <main className="p-4 space-y-4">
+            {activeTab === 'dashboard' && (
+              <>
+                <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200">
+                  <div className="flex justify-between items-center mb-3">
+                    <h2 className="font-bold text-sm text-slate-800">💰 Balance Económico (3 Excels)</h2>
+                    <button onClick={() => setShowAddPlayerModal(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl">+ Pareja</button>
+                  </div>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between py-1.5 border-b border-slate-100">
+                      <span className="text-slate-500">Bizum confirmados ({stats.playersPaidCount} jug.):</span>
+                      <span className="font-bold text-emerald-600">+{stats.bizumCollected} €</span>
+                    </div>
+                    <div className="flex justify-between py-1.5 border-b border-slate-100">
+                      <span className="text-slate-500">Aportación Patrocinadores:</span>
+                      <span className="font-bold text-teal-600">+{stats.sponsorIncome} €</span>
+                    </div>
+                    <div className="flex justify-between py-1.5 border-b border-slate-100">
+                      <span className="text-slate-500">Total Gastos (Excel Gastos):</span>
+                      <span className="font-bold text-rose-600">-{stats.totalExpenses} €</span>
+                    </div>
+                    <div className="flex justify-between pt-2 text-sm">
+                      <span className="font-extrabold text-slate-800">Beneficio Proyectado:</span>
+                      <span className={`font-black ${stats.projectedBalance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{stats.projectedBalance} €</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200">
+                  <h2 className="font-bold text-sm text-slate-800 mb-3">🎾 Parejas por Categoría</h2>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    {Object.entries(stats.byCategory).map(([cat, count]) => (
+                      <button key={cat} onClick={() => { setSelectedCat(cat); setActiveTab('jugadores'); }} className="flex justify-between items-center p-2.5 rounded-xl bg-slate-50 hover:bg-teal-50 border border-slate-200 text-left transition">
+                        <span className="text-xs font-bold text-slate-700">{cat}</span>
+                        <span className="bg-teal-700 text-lime-300 text-xs font-black px-2 py-0.5 rounded-lg">{count}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {activeTab === 'jugadores' && (
+              <>
+                <div className="bg-white rounded-2xl p-3.5 shadow-sm border border-slate-200 space-y-3 sticky top-2 z-30">
+                  <div className="flex gap-2">
+                    <input type="text" placeholder="🔍 Buscar jugador, teléfono..." value={search} onChange={e => setSearch(e.target.value)} className="flex-1 bg-slate-50 border rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-teal-500" />
+                    <button onClick={() => setShowAddPlayerModal(true)} className="bg-teal-700 text-lime-300 font-bold text-xs px-3 rounded-xl">+ Añadir</button>
+                  </div>
+                  <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-1">
+                    {CATEGORIES.map(cat => (
+                      <button key={cat} onClick={() => setSelectedCat(cat)} className={`px-3 py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition ${selectedCat === cat ? 'bg-teal-700 text-lime-300 shadow' : 'bg-slate-100 text-slate-600'}`}>{cat}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {filteredRegistrations.map((r) => {
+                    const pairTotal = (Number(r.p1Amount) || 0) + (Number(r.p2Amount) || 0);
+                    const isFullyPaid = r.p1Paid && r.p2Paid;
+                    return (
+                      <div key={r.rowNumber} className={`bg-white rounded-2xl p-4 shadow-sm border-l-4 ${isFullyPaid ? 'border-l-emerald-500' : 'border-l-amber-400'} border border-slate-200`}>
+                        <div className="flex justify-between items-center mb-2.5">
+                          <span className="bg-teal-50 text-teal-800 text-[11px] font-extrabold px-2.5 py-0.5 rounded-full">{r.cat}</span>
+                          <span className={`text-xs font-extrabold px-2 py-0.5 rounded-lg ${isFullyPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                            Bizum: {pairTotal}€ / 58€
+                          </span>
+                        </div>
+                        <div className="bg-slate-50 rounded-xl p-2.5 mb-2 flex justify-between items-center">
+                          <div className="pr-2">
+                            <div className="font-bold text-xs text-slate-800">1. {r.p1Name}</div>
+                            <a href={`tel:${r.p1Phone}`} className="text-[11px] text-teal-600 underline font-medium">{r.p1Phone}</a>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <input type="number" value={r.p1Amount} onChange={e => updatePlayerBizumAmount(r, 1, e.target.value)} onBlur={() => sendPostToSheets({action:"updateBizum", rowNumber:r.rowNumber, p1Paid:r.p1Paid, p1Amount:r.p1Amount, p2Paid:r.p2Paid, p2Amount:r.p2Amount})} className="w-14 bg-white border rounded-lg px-1.5 py-1 text-right text-xs font-bold" />
+                            <span className="text-[11px] text-slate-400">€</span>
+                            <button onClick={() => togglePlayerBizum(r, 1)} className={`px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold transition ${r.p1Paid ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-600'}`}>{r.p1Paid ? '✓ OK' : 'Pend.'}</button>
+                          </div>
+                        </div>
+                        <div className="bg-slate-50 rounded-xl p-2.5 flex justify-between items-center">
+                          <div className="pr-2">
+                            <div className="font-bold text-xs text-slate-800">2. {r.p2Name}</div>
+                            <a href={`tel:${r.p2Phone}`} className="text-[11px] text-teal-600 underline font-medium">{r.p2Phone}</a>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <input type="number" value={r.p2Amount} onChange={e => updatePlayerBizumAmount(r, 2, e.target.value)} onBlur={() => sendPostToSheets({action:"updateBizum", rowNumber:r.rowNumber, p1Paid:r.p1Paid, p1Amount:r.p1Amount, p2Paid:r.p2Paid, p2Amount:r.p2Amount})} className="w-14 bg-white border rounded-lg px-1.5 py-1 text-right text-xs font-bold" />
+                            <span className="text-[11px] text-slate-400">€</span>
+                            <button onClick={() => togglePlayerBizum(r, 2)} className={`px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold transition ${r.p2Paid ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-600'}`}>{r.p2Paid ? '✓ OK' : 'Pend.'}</button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {activeTab === 'sponsors' && (
+              <>
+                <form onSubmit={handleAddSponsor} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 space-y-3">
+                  <h2 className="font-bold text-sm text-slate-800">🤝 Añadir Patrocinador (Excel Patrocinadores)</h2>
+                  <input type="text" placeholder="Nombre marca" value={newSponsor.name} onChange={e => setNewSponsor({...newSponsor, name: e.target.value})} className="w-full border rounded-xl p-2 text-xs" required />
+                  <div className="grid grid-cols-2 gap-2">
+                    <input type="number" placeholder="Importe (€)" value={newSponsor.amount} onChange={e => setNewSponsor({...newSponsor, amount: e.target.value})} className="border rounded-xl p-2 text-xs" />
+                    <select value={newSponsor.status} onChange={e => setNewSponsor({...newSponsor, status: e.target.value})} className="border rounded-xl p-2 text-xs bg-white">
+                      <option value="Confirmado">Confirmado</option>
+                      <option value="En negociación">En negociación</option>
+                    </select>
+                  </div>
+                  <button type="submit" className="w-full bg-teal-700 text-lime-300 font-bold text-xs py-2.5 rounded-xl shadow">+ Guardar en Excel</button>
+                </form>
+
+                <div className="space-y-2.5">
+                  {sponsors.map(s => (
+                    <div key={s.id} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 flex justify-between items-start">
+                      <div>
+                        <div className="font-bold text-sm text-slate-800">{s.name}</div>
+                        <div className="text-xs text-teal-700 font-medium">{s.type} · {s.status}</div>
+                        {s.notes && <p className="text-xs text-slate-500 mt-1">{s.notes}</p>}
+                      </div>
+                      {s.amount > 0 && <span className="font-black text-sm text-emerald-600">+{s.amount}€</span>}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {activeTab === 'expenses' && (
+              <>
+                <form onSubmit={handleAddExpense} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 space-y-3">
+                  <h2 className="font-bold text-sm text-slate-800">🛒 Añadir Gasto (Excel Gastos)</h2>
+                  <input type="text" placeholder="Concepto (ej. Bolas, Pistas...)" value={newExpense.concept} onChange={e => setNewExpense({...newExpense, concept: e.target.value})} className="w-full border rounded-xl p-2 text-xs" required />
+                  <div className="grid grid-cols-2 gap-2">
+                    <input type="number" step="0.01" placeholder="Importe (€)" value={newExpense.amount} onChange={e => setNewExpense({...newExpense, amount: e.target.value})} className="border rounded-xl p-2 text-xs" required />
+                    <input type="text" placeholder="Pagado por" value={newExpense.paidBy} onChange={e => setNewExpense({...newExpense, paidBy: e.target.value})} className="border rounded-xl p-2 text-xs" />
+                  </div>
+                  <button type="submit" className="w-full bg-rose-600 text-white font-bold text-xs py-2.5 rounded-xl">+ Guardar en Excel Gastos</button>
+                </form>
+
+                <div className="space-y-2.5">
+                  {expenses.map(exp => (
+                    <div key={exp.id} className="bg-white rounded-2xl p-3.5 shadow-sm border border-slate-200 flex justify-between items-center">
+                      <div>
+                        <div className="font-bold text-xs text-slate-800">{exp.concept}</div>
+                        <div className="text-[11px] text-slate-500">Pagado por: {exp.paidBy}</div>
+                      </div>
+                      <span className="font-black text-sm text-rose-600">-{exp.amount}€</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </main>
+
+          {showConfigModal && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+              <div className="bg-white w-full max-w-sm rounded-3xl p-5 space-y-3 shadow-2xl">
+                <h3 className="font-bold text-sm text-slate-800">🔗 Conectar Apps Script</h3>
+                <p className="text-xs text-slate-500">Pega la URL web de tu Apps Script:</p>
+                <input type="text" placeholder="https://script.google.com/macros/s/.../exec" value={scriptUrl} onChange={e => setScriptUrl(e.target.value)} className="w-full border rounded-xl p-2.5 text-xs" />
+                <button onClick={() => { localStorage.setItem('tmp_script_url', scriptUrl); setShowConfigModal(false); fetchAllFromGoogleSheets(scriptUrl); }} className="w-full bg-teal-700 text-lime-300 font-bold py-2.5 rounded-xl text-xs shadow">Guardar y Conectar</button>
+              </div>
+            </div>
+          )}
+
+          {showAddPlayerModal && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+              <div className="bg-white w-full max-w-md rounded-t-3xl sm:rounded-3xl p-5 space-y-3">
+                <div className="flex justify-between items-center">
+                  <h3 className="font-bold text-sm text-slate-800">Nueva Pareja</h3>
+                  <button onClick={() => setShowAddPlayerModal(false)}>✕</button>
+                </div>
+                <form onSubmit={handleAddPair} className="space-y-2.5 text-xs">
+                  <select value={newPair.cat} onChange={e => setNewPair({...newPair, cat: e.target.value})} className="w-full border rounded-xl p-2.5 font-bold">
+                    {CATEGORIES.filter(c => c !== 'Todas').map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <input type="text" placeholder="Jugador 1 (Nombre y apellidos)" value={newPair.p1Name} onChange={e => setNewPair({...newPair, p1Name: e.target.value})} className="w-full border rounded-lg p-2" required />
+                  <input type="text" placeholder="Teléfono J1" value={newPair.p1Phone} onChange={e => setNewPair({...newPair, p1Phone: e.target.value})} className="w-full border rounded-lg p-2" />
+                  <input type="text" placeholder="Jugador 2 (Nombre y apellidos)" value={newPair.p2Name} onChange={e => setNewPair({...newPair, p2Name: e.target.value})} className="w-full border rounded-lg p-2" required />
+                  <input type="text" placeholder="Teléfono J2" value={newPair.p2Phone} onChange={e => setNewPair({...newPair, p2Phone: e.target.value})} className="w-full border rounded-lg p-2" />
+                  <button type="submit" className="w-full bg-teal-700 text-lime-300 font-bold py-3 rounded-xl shadow">Guardar en Google Sheet</button>
+                </form>
+              </div>
+            </div>
+          )}
+
+          <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-white border-t flex justify-around py-2 z-40 shadow-lg">
+            <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center text-[11px] font-bold ${activeTab === 'dashboard' ? 'text-teal-700' : 'text-slate-400'}`}><span>📊</span><span>Resumen</span></button>
+            <button onClick={() => setActiveTab('jugadores')} className={`flex flex-col items-center text-[11px] font-bold ${activeTab === 'jugadores' ? 'text-teal-700' : 'text-slate-400'}`}><span>🎾</span><span>Inscritos</span></button>
+            <button onClick={() => setActiveTab('sponsors')} className={`flex flex-col items-center text-[11px] font-bold ${activeTab === 'sponsors' ? 'text-teal-700' : 'text-slate-400'}`}><span>🤝</span><span>Sponsors</span></button>
+            <button onClick={() => setActiveTab('expenses')} className={`flex flex-col items-center text-[11px] font-bold ${activeTab === 'expenses' ? 'text-teal-700' : 'text-slate-400'}`}><span>🛒</span><span>Gastos</span></button>
+          </nav>
+        </div>
+      );
+    }
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
